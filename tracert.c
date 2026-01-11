@@ -182,59 +182,62 @@ void listener() {
     fds[0].fd = sock_recv;
     fds[0].events = POLLIN;
 
-    int last_ttl_processed = 0;
-    int last_probe_processed = -1;
+    int current_processing_ttl = 0;
+    int current_processing_probe = -1;
 
-    // Continue listening until sender is done AND we've processed all packets
     while (1) {
-        int current_ttl = dest_instance->current_ttl;
-        int current_probe = dest_instance->current_probe;
+        int ttl = dest_instance->current_ttl;
+        int probe = dest_instance->current_probe;
         
-        // Check if we should exit: sender done AND we've processed everything
-        if (dest_instance->sender_done && 
-            current_ttl == last_ttl_processed && 
-            current_probe == last_probe_processed) {
-            break;
+        // Wait for sender to start sending
+        if (ttl == 0) {
+            usleep(10000);
+            continue;
         }
-
-        // Skip if we haven't moved to a new probe yet
-        if (current_ttl == 0 || 
-            (current_ttl == last_ttl_processed && current_probe == last_probe_processed)) {
-            usleep(10000); // Sleep 10ms to avoid busy waiting
+        
+        // Check if we have a new probe to process
+        if (ttl != current_processing_ttl || probe != current_processing_probe) {
+            current_processing_ttl = ttl;
+            current_processing_probe = probe;
+        } else if (dest_instance->sender_done && 
+                   ttl == current_processing_ttl && 
+                   probe == current_processing_probe) {
+            // Sender is done and we've processed the last probe
+            break;
+        } else {
+            usleep(10000);
             continue;
         }
 
+        // Now wait for response with timeout
         int poll_result = poll(fds, 1, TIMEOUT);
 
         if (poll_result == 0) {
-            // Timeout occurred
-            if (current_probe == 0) {
-                printf("%d  *", current_ttl);
+            // Timeout - print asterisk
+            if (probe == 0) {
+                printf("%d  *", ttl);
             } else {
                 printf("  *");
             }
             
-            if (current_probe == 2) {
+            if (probe == 2) {
                 printf("\n");
             }
-            
             fflush(stdout);
-            last_ttl_processed = current_ttl;
-            last_probe_processed = current_probe;
             continue;
         } else if (poll_result < 0) {
+            if (errno == EINTR) continue;
             perror("poll error");
-            last_ttl_processed = current_ttl;
-            last_probe_processed = current_probe;
             continue;
         }
 
+        // Receive packet
         memset(buffer, 0, sizeof(buffer));
-
         int bytes = recvfrom(sock_recv, buffer, sizeof(buffer), 0, 
                             (struct sockaddr*)&addr, &addr_len);
 
         if (bytes < 0) {
+            if (errno == EINTR) continue;
             perror("recvfrom error");
             continue;
         }
@@ -242,9 +245,7 @@ void listener() {
         if (bytes < (ssize_t)sizeof(struct iphdr))
             continue;
 
-        display(buffer, bytes, current_probe);
-        last_ttl_processed = current_ttl;
-        last_probe_processed = current_probe;
+        display(buffer, bytes, probe);
     }
 }
 
@@ -338,8 +339,8 @@ void send_packet(struct sockaddr_in address, int ttl) {
             perror("sendto");
         }
         
-        // Small delay between probes
-        usleep(100000); // 100ms between probes
+        // Wait for response before sending next probe (slightly more than TIMEOUT)
+        usleep(1100000); // 1.1 seconds - wait for response + timeout
     }
 }
 
@@ -355,20 +356,19 @@ void trace_route_to(struct sockaddr_in dst_addr) {
     while (counter <= MAX_HOP) {
         send_packet(dst_addr, counter);
         
-        // Check if we reached destination AFTER sending all 3 probes
+        // Check if we reached destination
         if (dest_instance->is_dest == DEST_REACHED) {
-            // We've reached the destination and sent all 3 packets
-            // Wait a bit for the listener to process the last responses
-            sleep(1);
             break;
         }
         
-        sleep(1); // Wait 1 second before moving to next TTL
         ++counter;
     }
     
     // Signal to listener that sender is done
     dest_instance->sender_done = 1;
+    
+    // Give listener time to process final packets
+    sleep(2);
 }
 
 /**
@@ -376,8 +376,8 @@ void trace_route_to(struct sockaddr_in dst_addr) {
  * @details Closes sockets and unmaps shared memory before program exit
  */
 void cleanup() {
-    if (sock_send >= 0) close(sock_send);
-    if (sock_recv >= 0) close(sock_recv);
+    //if (sock_send >= 0) close(sock_send);
+    //if (sock_recv >= 0) close(sock_recv);
     if (dest_instance != MAP_FAILED) {
         munmap(dest_instance, sizeof(dest_flag));
     }
