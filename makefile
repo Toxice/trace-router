@@ -3,19 +3,20 @@
 CC = gcc
 CFLAGS = -c
 TARGET = tracert
+OBJ = tracert.o
 
 #defining phony for compiling, running and cleaning
-.PHONY: all runtcp rundup clean
+.PHONY: all run clean
 
 all: $(TARGET)
 
-$(TARGET): tracert.o
+$(TARGET): $(OBJ)
 
-tracert.o: tracert.c tracert.h
+$(OBJ): tracert.c tracert.h
 	$(CC) $(CFLAGS) $< -o $@
 
 run:
 	sudo ./$(TARGET) -a 1.1.1.1
 
 clean:
-	rm tracert.o tracert	 		
+	rm $(TARGET) $(OBJ)		
